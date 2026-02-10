@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: dev_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  frontend:
+    build:
+      context: ../code/frontend
+      dockerfile: ../../deployment/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    develop:
+      watch:
+        - action: sync
+          path: ../code/frontend/src
+          target: /app/src
+        - action: rebuild
+          path: ../code/frontend/package.json
+
+  backend:
+    build:
+      context: ../code/backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgres://user:password@postgres:5432/dev_db
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
