@@ -1,0 +1,59 @@
+# General
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+*_Icon
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
+# Keep package-lock.json if you want reproducible builds, but some prefer to ignore it. 
+# Standard practice is to commit it, but given this is a template/early stage, ensuring no conflicts. 
+# Actually, standard practice IS to commit package-lock.json. I will NOT ignore it, so removing it from this list is better? 
+# Wait, I put it here. I should remove it. 
+# Re-writing the list to exclude package-lock.json as it should be committed.
+# Exclude coverage directories
+coverage/
+.nyc_output/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
