@@ -1,0 +1,42 @@
+name: Structure Check
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  check-structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for required files and directories
+        run: |
+          REQUIRED_PATHS=(
+            "code/backend"
+            "code/frontend"
+            "deployment"
+            "README.md"
+            ".gitignore"
+          )
+
+          MISSING_PATHS=()
+
+          for path in "${REQUIRED_PATHS[@]}"; do
+            if [ ! -e "$path" ]; then
+              echo "❌ Missing: $path"
+              MISSING_PATHS+=("$path")
+            else
+              echo "✅ Found: $path"
+            fi
+          done
+
+          if [ ${#MISSING_PATHS[@]} -gt 0 ]; then
+            echo "Error: Some required paths are missing."
+            exit 1
+          else
+            echo "All required paths exist."
+            exit 0
+          fi
