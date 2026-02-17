@@ -10,4 +10,4 @@ COPY tests/ tests/
 
 ENV PYTHONPATH=/app/src
 
-CMD ["python", "src/main.py"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
