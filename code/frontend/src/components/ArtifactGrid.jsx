@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom';
+
 const ArtifactCard = ({ artifact }) => {
     // Assuming artifact.images is an array and we take the first one as thumbnail
     const thumbnail = artifact.images && artifact.images.length > 0
@@ -5,22 +7,24 @@ const ArtifactCard = ({ artifact }) => {
         : 'https://via.placeholder.com/300x200?text=No+Image';
 
     return (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow">
-            <div className="aspect-w-3 aspect-h-2">
-                <img
-                    src={thumbnail}
-                    alt={artifact.object_type}
-                    className="w-full h-48 object-cover"
-                />
-            </div>
-            <div className="p-4">
-                <h3 className="font-semibold text-lg text-gray-900 mb-1">{artifact.object_type}</h3>
-                <p className="text-sm text-gray-500 mb-2">{artifact.date_display}</p>
-                <div className="flex flex-wrap gap-1">
-                    {/* If tags were available on the object response, we'd list them here */}
+        <Link to={`/objects/${artifact.id}`} className="block group">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow">
+                <div className="aspect-w-3 aspect-h-2">
+                    <img
+                        src={thumbnail}
+                        alt={artifact.object_type}
+                        className="w-full h-48 object-cover group-hover:opacity-90 transition-opacity"
+                    />
+                </div>
+                <div className="p-4">
+                    <h3 className="font-semibold text-lg text-gray-900 mb-1 group-hover:text-blue-600 transition-colors">{artifact.object_type}</h3>
+                    <p className="text-sm text-gray-500 mb-2">{artifact.date_display}</p>
+                    <div className="flex flex-wrap gap-1">
+                        {/* If tags were available on the object response, we'd list them here */}
+                    </div>
                 </div>
             </div>
-        </div>
+        </Link>
     );
 };
 

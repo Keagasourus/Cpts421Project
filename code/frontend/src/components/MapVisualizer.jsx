@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import useMapData from '../hooks/useMapData';
@@ -27,7 +28,7 @@ const MapVisualizer = () => {
     const defaultZoom = 5;
 
     return (
-        <div className="h-96 w-full rounded-lg overflow-hidden border border-gray-300 shadow-sm z-0">
+        <div className="h-full w-full rounded-lg overflow-hidden border border-gray-300 shadow-sm z-0">
             <MapContainer center={defaultCenter} zoom={defaultZoom} style={{ height: '100%', width: '100%' }}>
                 <TileLayer
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -39,7 +40,7 @@ const MapVisualizer = () => {
                             <Popup>
                                 <strong>{item.name}</strong>
                                 <br />
-                                <a href={`#object-${item.id}`} className="text-blue-600 hover:underline">View Details</a>
+                                <Link to={`/objects/${item.id}`} className="text-blue-600 hover:underline">View Details</Link>
                             </Popup>
                         </Marker>
                     ) : null
