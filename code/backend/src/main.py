@@ -50,7 +50,7 @@ app.add_middleware(
 # Exception handler for domain exceptions
 @app.exception_handler(BaseAppException)
 async def app_exception_handler(request: Request, exc: BaseAppException):
-    app_logger.warning("Domain exception raised", extra={"status": exc.status_code, "msg": exc.message})
+    app_logger.warning("Domain exception raised", extra={"status": exc.status_code, "detail": exc.message})
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.message},
