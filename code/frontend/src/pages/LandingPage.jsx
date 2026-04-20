@@ -44,7 +44,7 @@ const LandingPage = () => {
                             A better way to research
                         </p>
                         <p className="mt-4 max-w-2xl text-xl text-gray-500 lg:mx-auto">
-                            Lorem ipsum dolor sit amet consect adipisicing elit. Possimus magnam voluptatum cupiditate veritatis in accusamus quisquam.
+                            Powerful tools for exploring, analyzing, and citing historical artifacts from major world museums.
                         </p>
                     </div>
 
@@ -53,19 +53,19 @@ const LandingPage = () => {
                             {[
                                 {
                                     name: 'Advanced Search',
-                                    description: 'Lorem ipsum, dolor sit amet consectetur adipisicing elit. Maiores impedit perferendis suscipit eaque, iste dolor cupiditate blanditiis ratione.',
+                                    description: 'Filter artifacts by material, date range, and tags. Our fuzzy date system handles imprecise historical dating like "c. 350–400 AD" with precision.',
                                 },
                                 {
                                     name: 'Interactive Maps',
-                                    description: 'Lorem ipsum, dolor sit amet consectetur adipisicing elit. Maiores impedit perferendis suscipit eaque, iste dolor cupiditate blanditiis ratione.',
+                                    description: 'Visualize artifact findspots on a global interactive map. Click any marker to explore the full record of discoveries from that region.',
                                 },
                                 {
                                     name: 'Detailed Records',
-                                    description: 'Lorem ipsum, dolor sit amet consectetur adipisicing elit. Maiores impedit perferendis suscipit eaque, iste dolor cupiditate blanditiis ratione.',
+                                    description: 'Each artifact includes high-resolution imagery, dimensions, provenance data, and full Chicago-style bibliographic citations.',
                                 },
                                 {
-                                    name: 'Data Visualization',
-                                    description: 'Lorem ipsum, dolor sit amet consectetur adipisicing elit. Maiores impedit perferendis suscipit eaque, iste dolor cupiditate blanditiis ratione.',
+                                    name: 'Multi-Source Database',
+                                    description: 'Aggregates artifacts from the Metropolitan Museum of Art and the British Museum, with images permanently cached for reliable access.',
                                 },
                             ].map((feature) => (
                                 <div key={feature.name} className="relative">

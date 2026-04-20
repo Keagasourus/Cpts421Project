@@ -2,9 +2,9 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: dev_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
@@ -34,7 +34,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://user:password@postgres:5432/dev_db
+      DATABASE_URL: ${DATABASE_URL}
     depends_on:
       - postgres
 
@@ -44,8 +44,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
@@ -63,7 +63,7 @@ services:
     volumes:
       - ../data/reduced_dataset/images:/images
     entrypoint: >
-      /bin/sh -c " /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin; /usr/bin/mc mb myminio/uploads; /usr/bin/mc anonymous set public myminio/uploads; /usr/bin/mc cp --recursive /images/ myminio/uploads/; exit 0; "
+      /bin/sh -c " /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}; /usr/bin/mc mb myminio/${MINIO_BUCKET:-uploads}; /usr/bin/mc anonymous set public myminio/${MINIO_BUCKET:-uploads}; /usr/bin/mc cp --recursive /images/ myminio/${MINIO_BUCKET:-uploads}/; exit 0; "
 
 volumes:
   postgres_data:

@@ -32,7 +32,9 @@ const ObjectPage = () => {
                                     <img
                                         src={img.file_url}
                                         alt={`${object.object_type} - ${img.view_type || 'View'}`}
-                                        className="w-full h-auto object-contain"
+                                        className="w-full h-auto object-contain min-h-[300px]"
+                                        referrerPolicy="no-referrer"
+                                        onError={(e) => { e.target.onerror = null; e.target.src = 'https://via.placeholder.com/600x400?text=Error+Loading+Image+from+Museum+Server' }}
                                     />
                                     {img.image_type && (
                                         <div className="p-2 text-xs text-center text-gray-500 bg-white border-t border-gray-200">

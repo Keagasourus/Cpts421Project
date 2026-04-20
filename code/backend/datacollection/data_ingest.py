@@ -1,200 +1,222 @@
+"""
+Metropolitan Museum of Art data ingestion script.
+Refactored to use shared ingestion_utils for DRY compliance (MAINT-02/03).
+"""
 import os
-import requests
-from src.database import SessionLocal
-from src.models import Object, Image, Tag, Source
-from sqlalchemy.exc import IntegrityError
+import re
 import time
+import logging
 
-def ingest_data():
-    import os
+import requests
+from bs4 import BeautifulSoup
+
+from src.database import SessionLocal
+from src.models import Object
+from .s3_utils import download_and_upload_to_minio
+from .ingestion_utils import (
+    reset_sequences,
+    get_or_create_source,
+    get_or_create_tag,
+    retro_cache_existing_images,
+    create_object_safe,
+    add_image_to_object,
+)
+
+logger = logging.getLogger(__name__)
+
+MET_SEARCH_URL = "https://collectionapi.metmuseum.org/public/collection/v1/search"
+MET_OBJECT_URL = "https://collectionapi.metmuseum.org/public/collection/v1/objects"
+
+
+def _load_keywords() -> list:
+    """Load search keywords from the keywords file."""
     keywords_path = os.path.join(os.path.dirname(__file__), "keywords")
     try:
         with open(keywords_path, "r") as f:
-            queries = [line.strip() for line in f if line.strip()]
+            return [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        print(f"Could not find {keywords_path}, falling back to empty list.")
-        queries = []
-    base_search_url = "https://collectionapi.metmuseum.org/public/collection/v1/search"
-    base_object_url = "https://collectionapi.metmuseum.org/public/collection/v1/objects"
+        logger.warning("Could not find %s, falling back to empty list.", keywords_path)
+        return []
 
+
+def _search_object_ids(queries: list) -> set:
+    """Search the MET API for object IDs matching the given keywords."""
     object_ids = set()
-    print("Searching for artifacts...")
-    for q in queries:
-        resp = requests.get(base_search_url, params={"hasImages": "true", "q": q})
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("objectIDs"):
-                # Take up to 50 from each category to provide a massive database without getting DDoSed and IP blocked
-                for oid in data["objectIDs"][:50]:
-                    object_ids.add(oid)
-            time.sleep(0.5)  # Be gentle to the Met API
-    
+    for query in queries:
+        try:
+            resp = requests.get(
+                MET_SEARCH_URL,
+                params={"hasImages": "true", "q": query, "dateBegin": 200, "dateEnd": 899},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("objectIDs"):
+                    for oid in data["objectIDs"][:50]:
+                        object_ids.add(oid)
+        except requests.RequestException as exc:
+            logger.warning("Search failed for '%s': %s", query, exc)
+        time.sleep(0.5)
+    return object_ids
+
+
+def _build_citation(obj_data: dict) -> str:
+    """Build a Chicago-style citation from MET API object data."""
+    artist = obj_data.get("artistDisplayName", "")
+    if artist:
+        artist = f"{artist}. "
+    title = obj_data.get("title") or obj_data.get("objectName") or "Unknown Title"
+    date = obj_data.get("objectDate", "Unknown Date")
+    medium = obj_data.get("medium", "Unknown medium")
+    repo = obj_data.get("repository", "The Metropolitan Museum of Art")
+    url = obj_data.get("objectURL", "")
+    return f"{artist}{title}. {date}. {medium}. {repo}. {url}".strip()
+
+
+def _scrape_description(object_url: str) -> str:
+    """Attempt to scrape a rich description from the MET website."""
+    if not object_url:
+        return ""
+    try:
+        page_resp = requests.get(
+            object_url,
+            headers={"User-Agent": "AcademicArtifactDB/1.0"},
+            timeout=5,
+        )
+        if page_resp.status_code == 200:
+            soup = BeautifulSoup(page_resp.text, 'html.parser')
+            divs = soup.find_all(attrs={'data-testid': 'read-more-content'})
+            if divs:
+                return divs[0].get_text(separator=' ', strip=True)
+            # Fallback to og:description meta tag
+            match = re.search(
+                r'<meta\s+(?:property|name)=[\'"]og:description[\'"]\s+content=[\'\"](.*?)[\'\"]\s*/?>',
+                page_resp.text,
+                re.IGNORECASE,
+            )
+            if match:
+                desc = match.group(1)
+                return desc.replace("&quot;", '"').replace("&#39;", "'").replace("&amp;", "&")
+    except Exception as exc:
+        logger.debug("Could not fetch description from %s: %s", object_url, exc)
+    return ""
+
+
+def _build_fallback_description(obj_data: dict) -> str:
+    """Generate a synthetic description when scraping fails."""
+    medium = obj_data.get("medium", "materials")
+    culture = obj_data.get("culture", "unknown")
+    date = obj_data.get("objectDate", "an unknown period")
+    return f"An artifact characterized by its {medium} from the {culture} culture, dating to {date}."
+
+
+def ingest_data():
+    """Main ingestion pipeline for Metropolitan Museum of Art artifacts."""
+    queries = _load_keywords()
+    object_ids = _search_object_ids(queries)
     print(f"Found {len(object_ids)} unique artifacts to ingest.")
 
     db = SessionLocal()
-    from sqlalchemy import text
     try:
-        db.execute(text("SELECT setval('sources_id_seq', COALESCE((SELECT MAX(id)+1 FROM sources), 1), false)"))
-        db.execute(text("SELECT setval('objects_id_seq', COALESCE((SELECT MAX(id)+1 FROM objects), 1), false)"))
-        db.execute(text("SELECT setval('images_id_seq', COALESCE((SELECT MAX(id)+1 FROM images), 1), false)"))
-        db.execute(text("SELECT setval('tags_id_seq', COALESCE((SELECT MAX(id)+1 FROM tags), 1), false)"))
-        db.commit()
-    except Exception as e:
-        print("Could not update sequences:", e)
-        db.rollback()
-    
-    # Removed generic source creation
+        reset_sequences(db)
 
-    count = 0
-    for oid in list(object_ids):
-        # Throttle request to avoid rate limit and Cloudflare ban
-        time.sleep(1)
-        resp = requests.get(f"{base_object_url}/{oid}")
-        if resp.status_code != 200:
-            continue
-            
-        obj_data = resp.json()
-        
-        # We need essentially some minimal data.
-        inventory_num = obj_data.get("accessionNumber")
-        if not inventory_num:
-            continue
-            
-        artist = obj_data.get("artistDisplayName", "")
-        if artist:
-            artist = f"{artist}. "
-        title = obj_data.get("title") or obj_data.get("objectName") or "Unknown Title"
-        date = obj_data.get("objectDate", "Unknown Date")
-        medium = obj_data.get("medium", "Unknown medium")
-        repo = obj_data.get("repository", "The Metropolitan Museum of Art")
-        url = obj_data.get("objectURL", "")
-        
-        biblio = f"{artist}{title}. {date}. {medium}. {repo}. {url}".strip()
-        
-        import re
-        try:
-            from bs4 import BeautifulSoup
-        except ImportError:
-            import subprocess, sys
-            print("Installing BeautifulSoup4...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "beautifulsoup4"])
-            from bs4 import BeautifulSoup
+        count = 0
+        for oid in list(object_ids):
+            time.sleep(1)  # Throttle to avoid rate limits
 
-        desc_text = ""
-        object_url = obj_data.get("objectURL")
-        if object_url:
+            # Fetch object data from API
             try:
-                page_resp = requests.get(object_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-                if page_resp.status_code == 200:
-                    bs = BeautifulSoup(page_resp.text, 'html.parser')
-                    divs = bs.find_all(attrs={'data-testid': 'read-more-content'})
-                    if divs:
-                        desc_text = divs[0].get_text(separator=' ', strip=True)
-                    else:
-                        match = re.search(r'<meta\s+(?:property|name)=[\'"]og:description[\'"]\s+content=[\'"](.*?)[\'"]\s*/?>', page_resp.text, re.IGNORECASE)
-                        if match:
-                            desc_text = match.group(1).replace("&quot;", '"').replace("&#39;", "'").replace("&amp;", "&")
-            except Exception as e:
-                print(f"Could not fetch description from {object_url}: {e}")
-        
-        if not desc_text:
-            desc_text = f"An artifact characterized by its {obj_data.get('medium', 'materials')} from the {obj_data.get('culture', 'unknown')} culture, dating to {obj_data.get('objectDate', 'an unknown period')}."
-        
-        # Get or create source
-        source = db.query(Source).filter_by(citation_text=biblio).first()
-        if not source:
-            source = Source(citation_text=biblio)
-            db.add(source)
-            db.commit()
-            db.refresh(source)
-            
-        # Check if already exists
-        existing_obj = db.query(Object).filter_by(inventory_number=inventory_num).first()
-        if existing_obj:
-            print(f"Object {inventory_num} already exists, updating bibliography and description.")
-            for img in existing_obj.images:
-                img.source_id = source.id
-            existing_obj.description = desc_text
-            db.commit()
-            continue
-            
-        # Ensure we have a primary image
-        primary_image = obj_data.get("primaryImage")
-        if not primary_image:
-            continue
+                resp = requests.get(f"{MET_OBJECT_URL}/{oid}", timeout=10)
+                if resp.status_code != 200:
+                    continue
+                obj_data = resp.json()
+            except requests.RequestException as exc:
+                logger.warning("Network error on MET API for obj %s: %s", oid, exc)
+                time.sleep(2)
+                continue
 
-        obj = Object(
-            object_type=obj_data.get("objectName") or obj_data.get("title") or "Unknown Artifact",
-            material=obj_data.get("medium") or "Unknown",
-            findspot=obj_data.get("region") or obj_data.get("locale") or obj_data.get("country") or "Unknown",
-            inventory_number=inventory_num,
-            description=desc_text,
-            date_display=obj_data.get("objectDate") or "Unknown",
-            date_start=obj_data.get("objectBeginDate") or 0,
-            date_end=obj_data.get("objectEndDate") or 0
-        )
-        
-        db.add(obj)
-        try:
-            db.commit()
-            db.refresh(obj)
-        except IntegrityError:
-            db.rollback()
-            continue
+            # Validate required fields
+            inventory_num = obj_data.get("accessionNumber")
+            if not inventory_num:
+                continue
 
-        # Add image
-        img = Image(
-            object_id=obj.id,
-            source_id=source.id,
-            image_type="Primary",
-            view_type="Front",
-            file_url=primary_image
-        )
-        db.add(img)
-        
-        # Process Tags
-        tags_data = obj_data.get("tags")
-        if tags_data:
-            for tag_info in tags_data:
-                tag_name = tag_info.get("term")
-                if not tag_name: continue
-                tag = db.query(Tag).filter_by(tag_name=tag_name).first()
-                if not tag:
-                    tag = Tag(tag_name=tag_name)
-                    db.add(tag)
-                    db.commit()
-                    db.refresh(tag)
-                img.tags.append(tag)
-                
-        # Handle additional images if any
-        add_images = obj_data.get("additionalImages", [])
-        for add_url in add_images[:3]:  # Limit to 3 additional images to save space
-            add_img = Image(
-                object_id=obj.id,
-                source_id=source.id,
-                image_type="Additional",
-                view_type="Unknown",
-                file_url=add_url
+            # Date range filter: 200 CE – 899 CE
+            try:
+                date_begin = int(obj_data.get("objectBeginDate", 0))
+                date_end = int(obj_data.get("objectEndDate", 0))
+            except (ValueError, TypeError):
+                date_begin, date_end = 0, 0
+            if date_end < 200 or date_begin > 899:
+                continue
+
+            citation = _build_citation(obj_data)
+            source = get_or_create_source(db, citation)
+
+            desc_text = _scrape_description(obj_data.get("objectURL"))
+            if not desc_text:
+                desc_text = _build_fallback_description(obj_data)
+
+            # Handle existing objects (retro-cache + metadata update)
+            existing_obj = db.query(Object).filter_by(inventory_number=inventory_num).first()
+            if existing_obj:
+                print(f"Object {inventory_num} already exists, updating metadata.")
+                retro_cache_existing_images(db, existing_obj, source, desc_text, prefix="MET")
+                continue
+
+            # Must have a primary image
+            primary_image = obj_data.get("primaryImage")
+            if not primary_image:
+                continue
+
+            obj = create_object_safe(
+                db,
+                object_type=obj_data.get("objectName") or obj_data.get("title") or "Unknown Artifact",
+                material=obj_data.get("medium") or "Unknown",
+                findspot=obj_data.get("region") or obj_data.get("locale") or obj_data.get("country") or "Unknown",
+                inventory_number=inventory_num,
+                description=desc_text,
+                date_display=obj_data.get("objectDate") or "Unknown",
+                date_start=date_begin,
+                date_end=date_end,
             )
-            # Maybe apply the same tags to additional images
-            if tags_data:
+            if not obj:
+                continue
+
+            # Cache primary image to MinIO
+            minio_primary = download_and_upload_to_minio(primary_image, obj.id, prefix="MET")
+            if minio_primary:
+                primary_img = add_image_to_object(
+                    db, obj.id, source.id, minio_primary, "Primary", "Front"
+                )
+
+                # Attach tags to the primary image
+                tags_data = obj_data.get("tags") or []
                 for tag_info in tags_data:
                     tag_name = tag_info.get("term")
                     if tag_name:
-                        t = db.query(Tag).filter_by(tag_name=tag_name).first()
-                        if t: add_img.tags.append(t)
-            db.add(add_img)
+                        tag = get_or_create_tag(db, tag_name)
+                        primary_img.tags.append(tag)
 
-        try:
-            db.commit()
-            count += 1
-            print(f"Successfully added obj {inventory_num} ({count})")
-        except Exception as e:
-            db.rollback()
-            print(f"Failed to add images for {inventory_num}: {e}")
+            # Cache additional images (limit to 3)
+            for add_url in obj_data.get("additionalImages", [])[:3]:
+                minio_add = download_and_upload_to_minio(add_url, obj.id, prefix="MET")
+                if minio_add:
+                    add_image_to_object(
+                        db, obj.id, source.id, minio_add, "Additional", "Unknown"
+                    )
 
-    print(f"Ingestion complete. Added {count} artifacts.")
-    db.close()
+            try:
+                db.commit()
+                count += 1
+                print(f"Successfully added obj {inventory_num} ({count})")
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Failed to add images for %s: %s", inventory_num, exc)
+
+        print(f"Ingestion complete. Added {count} artifacts.")
+    finally:
+        db.close()
+
 
 if __name__ == "__main__":
     ingest_data()

@@ -8,3 +8,6 @@ pydantic
 pytest
 httpx
 beautifulsoup4
+boto3
+selenium
+undetected-chromedriver
