@@ -5,8 +5,11 @@ Owns the bibliography aggregation logic that was previously duplicated in 3 plac
 """
 from typing import List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 from ..repositories.object_repository import ObjectRepository
 from ..models import Object
+from ..logger import app_logger
+from ..exceptions import EntityNotFoundError, BaseAppException
 
 
 def build_bibliography(obj: Object) -> List[str]:
@@ -41,22 +44,35 @@ class ObjectService:
         year: Optional[int] = None,
         date_start: Optional[int] = None,
         date_end: Optional[int] = None,
+        skip: int = 0,
+        limit: int = 100,
     ) -> List[dict]:
         """Search objects and enrich each with bibliography."""
-        objects = self.repo.search(
-            material=material,
-            year=year,
-            date_start=date_start,
-            date_end=date_end,
-        )
-        return [_enrich_object_dict(obj) for obj in objects]
+        try:
+            objects = self.repo.search(
+                material=material,
+                year=year,
+                date_start=date_start,
+                date_end=date_end,
+                skip=skip,
+                limit=limit
+            )
+            return [_enrich_object_dict(obj) for obj in objects]
+        except SQLAlchemyError as e:
+            app_logger.error("Database search failed", exc_info=True)
+            raise BaseAppException("Internal database error during search", 500)
 
     def get_by_id(self, object_id: int) -> Optional[dict]:
         """Fetch a single object by ID, enriched with bibliography."""
-        obj = self.repo.get_by_id(object_id)
-        if not obj:
-            return None
-        return _enrich_object_dict(obj)
+        try:
+            obj = self.repo.get_by_id(object_id)
+            if not obj:
+                app_logger.warning("Object not found", extra={"object_id": object_id})
+                raise EntityNotFoundError("Object", object_id)
+            return _enrich_object_dict(obj)
+        except SQLAlchemyError as e:
+            app_logger.error("Database GET failed", exc_info=True)
+            raise BaseAppException("Internal database error", 500)
 
     def get_map_data(self) -> List[dict]:
         """Lightweight map data — no enrichment needed."""
@@ -69,17 +85,37 @@ class ObjectService:
     def create_object(self, object_data: dict) -> dict:
         """Create a new artifact manually."""
         images_data = object_data.pop("images", [])
-        obj = self.repo.add_object(object_data, images_data)
-        return _enrich_object_dict(obj)
+        try:
+            obj = self.repo.add_object(object_data, images_data)
+            app_logger.info("Created object", extra={"object_id": obj.id})
+            return _enrich_object_dict(obj)
+        except SQLAlchemyError as e:
+            app_logger.error("Failed to create object", exc_info=True)
+            raise BaseAppException("Internal database error during creation", 500)
 
     def update_object(self, object_id: int, object_data: dict) -> Optional[dict]:
         """Edit an artifact."""
         images_data = object_data.pop("images", [])
-        obj = self.repo.update_object(object_id, object_data, images_data)
-        if obj:
+        try:
+            obj = self.repo.update_object(object_id, object_data, images_data)
+            if not obj:
+                app_logger.warning("Object not found for update", extra={"object_id": object_id})
+                raise EntityNotFoundError("Object", object_id)
+            app_logger.info("Updated object", extra={"object_id": object_id})
             return _enrich_object_dict(obj)
-        return None
+        except SQLAlchemyError as e:
+            app_logger.error("Failed to update object", exc_info=True)
+            raise BaseAppException("Internal database error during update", 500)
 
     def delete_object(self, object_id: int) -> bool:
         """Delete an artifact."""
-        return self.repo.delete_object(object_id)
+        try:
+            result = self.repo.delete_object(object_id)
+            if not result:
+                app_logger.warning("Object not found for deletion", extra={"object_id": object_id})
+                raise EntityNotFoundError("Object", object_id)
+            app_logger.info("Deleted object", extra={"object_id": object_id})
+            return result
+        except SQLAlchemyError as e:
+            app_logger.error("Failed to delete object", exc_info=True)
+            raise BaseAppException("Internal database error during deletion", 500)

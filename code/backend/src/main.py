@@ -1,8 +1,13 @@
 import time
-from fastapi import FastAPI, HTTPException, Query, Depends, Request, Response, UploadFile, File, status
-from sqlalchemy.orm import Session
+import uuid
 from typing import List, Optional
 from datetime import timedelta
+
+from fastapi import FastAPI, HTTPException, Query, Depends, Request, Response, UploadFile, File, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.orm import Session
 
 from .database import get_db, get_engine, Base
 from .schemas import ObjectDetailResponse, ObjectMapResponse, UserLogin, ObjectCreate, ObjectUpdate
@@ -10,20 +15,21 @@ from .services.object_service import ObjectService
 from .services.s3_service import upload_file_to_minio
 from .auth import verify_password, create_access_token, get_current_user, get_current_admin_user, ACCESS_TOKEN_EXPIRE_MINUTES
 from .models import User
+from .exceptions import BaseAppException
+from .logger import app_logger
 
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables on startup
-    # In production, use migrations (Alembic) instead
+    # Setup DB on startup
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
+    app_logger.info("Application starting up, database schemas verified.")
     yield
+    app_logger.info("Application shutting down.")
 
 app = FastAPI(lifespan=lifespan)
-
-from fastapi.middleware.cors import CORSMiddleware
 
 origins = [
     "http://localhost:3000",
@@ -37,17 +43,49 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Fixed to allow all methods
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# SEC-13: Simple in-memory rate limiter middleware
-# (Rate limit skipped logic here for brevity, keeping existing)
+# Exception handler for domain exceptions
+@app.exception_handler(BaseAppException)
+async def app_exception_handler(request: Request, exc: BaseAppException):
+    app_logger.warning("Domain exception raised", extra={"status": exc.status_code, "msg": exc.message})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.message},
+    )
+
+
+# Logging and Trace ID Middleware
+@app.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    trace_id = request.headers.get("X-Trace-ID", str(uuid.uuid4()))
+    request.state.trace_id = trace_id
+    
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    
+    app_logger.info(
+        "Request processed",
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": round(process_time * 1000, 2),
+            "trace_id": trace_id
+        }
+    )
+    response.headers["X-Trace-ID"] = trace_id
+    return response
+
+
+# Rate limiter middleware
 RATE_LIMIT_WINDOW = 60  # seconds
 RATE_LIMIT_MAX = 120    # max requests per window per IP
 _rate_limit_store: dict = {}
-
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
@@ -57,41 +95,45 @@ async def rate_limit_middleware(request: Request, call_next):
     if client_ip not in _rate_limit_store:
         _rate_limit_store[client_ip] = []
 
-    # Prune old entries outside the window
     _rate_limit_store[client_ip] = [
         t for t in _rate_limit_store[client_ip] if now - t < RATE_LIMIT_WINDOW
     ]
 
     if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_MAX:
-        return Response(
-            content='{"detail":"Rate limit exceeded. Try again later."}',
-            status_code=429,
-            media_type="application/json"
+        app_logger.warning("Rate limit exceeded", extra={"ip": client_ip})
+        return JSONResponse(
+            content={"detail": "Rate limit exceeded. Try again later."},
+            status_code=429
         )
 
     _rate_limit_store[client_ip].append(now)
-    response = await call_next(request)
-    return response
+    return await call_next(request)
 
 
 @app.get("/")
-def read_root():
+async def read_root():
     return {"message": "Academic Artifact Research Database API"}
 
-# Custom Auth Endpoints Using HttpOnly Cookies
 
+# Custom Auth Endpoints Using HttpOnly Cookies
 @app.post("/auth/login")
-def login(login_data: UserLogin, response: Response, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == login_data.username).first()
+async def login(login_data: UserLogin, response: Response, db: Session = Depends(get_db)):
+    def _do_login():
+        return db.query(User).filter(User.username == login_data.username).first()
+
+    user = await run_in_threadpool(_do_login)
     if not user or not verify_password(login_data.password, user.password_hash):
+        app_logger.warning("Failed login attempt", extra={"username": login_data.username})
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
         )
+    
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
+    
     response.set_cookie(
         key="access_token",
         value=f"Bearer {access_token}",
@@ -101,80 +143,84 @@ def login(login_data: UserLogin, response: Response, db: Session = Depends(get_d
         samesite="lax",
         secure=False, # Set True in production with HTTPS
     )
+    app_logger.info("User logged in successfully", extra={"username": user.username})
     return {"message": "Logged in successfully", "is_admin": user.is_admin}
 
+
 @app.post("/auth/logout")
-def logout(response: Response):
+async def logout(response: Response):
     response.delete_cookie("access_token")
     return {"message": "Logged out successfully"}
 
+
 @app.get("/auth/me")
-def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(current_user: User = Depends(get_current_user)):
     return {"username": current_user.username, "is_admin": current_user.is_admin}
 
-# Admin Object Management 
 
+# Admin Object Management 
 @app.post("/upload-images")
-def upload_images(files: List[UploadFile] = File(...), current_user: User = Depends(get_current_admin_user)):
+async def upload_images(files: List[UploadFile] = File(...), current_user: User = Depends(get_current_admin_user)):
     urls = []
     for f in files:
-        urls.append(upload_file_to_minio(f))
+        url = await run_in_threadpool(upload_file_to_minio, f)
+        urls.append(url)
     return {"urls": urls}
 
+
 @app.post("/objects", response_model=ObjectDetailResponse)
-def create_object(object_data: ObjectCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
+async def create_object(object_data: ObjectCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
     service = ObjectService(db)
-    return service.create_object(object_data.model_dump())
+    return await run_in_threadpool(service.create_object, object_data.model_dump())
+
 
 @app.put("/objects/{object_id}", response_model=ObjectDetailResponse)
-def update_object(object_id: int, object_data: ObjectUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
+async def update_object(object_id: int, object_data: ObjectUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
     service = ObjectService(db)
-    result = service.update_object(object_id, object_data.model_dump())
-    if not result:
-        raise HTTPException(status_code=404, detail="Object not found")
-    return result
+    return await run_in_threadpool(service.update_object, object_id, object_data.model_dump())
+
 
 @app.delete("/objects/{object_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_object(object_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
+async def delete_object(object_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
     service = ObjectService(db)
-    success = service.delete_object(object_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Object not found")
+    await run_in_threadpool(service.delete_object, object_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-# Existing Endpoints
 
+# Existing Endpoints
 @app.get("/objects/search", response_model=List[ObjectDetailResponse])
-def search_objects(
+async def search_objects(
     material: Optional[str] = Query(None, max_length=255),
     year: Optional[int] = Query(None, description="Fuzzy date search year"),
     date_start: Optional[int] = None,
     date_end: Optional[int] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db)
 ):
     service = ObjectService(db)
-    return service.search(material=material, year=year, date_start=date_start, date_end=date_end)
+    return await run_in_threadpool(
+        service.search,
+        material, year, date_start, date_end, skip, limit
+    )
 
 
 @app.get("/objects/map", response_model=List[ObjectMapResponse])
-def get_objects_map(db: Session = Depends(get_db)):
+async def get_objects_map(db: Session = Depends(get_db)):
     service = ObjectService(db)
-    return service.get_map_data()
+    return await run_in_threadpool(service.get_map_data)
 
 
 @app.get("/tags", response_model=List[str])
-def get_tags(db: Session = Depends(get_db)):
+async def get_tags(db: Session = Depends(get_db)):
     service = ObjectService(db)
-    return service.get_all_tags()
+    return await run_in_threadpool(service.get_all_tags)
 
 
 @app.get("/objects/{object_id}", response_model=ObjectDetailResponse)
-def get_object_detail(object_id: int, db: Session = Depends(get_db)):
+async def get_object_detail(object_id: int, db: Session = Depends(get_db)):
     service = ObjectService(db)
-    result = service.get_by_id(object_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Object not found")
-    return result
+    return await run_in_threadpool(service.get_by_id, object_id)
 
 
 if __name__ == "__main__":

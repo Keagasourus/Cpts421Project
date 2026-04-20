@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import text
 from typing import List, Optional
 from ..models import Object, Image, Source, Tag
@@ -9,14 +9,20 @@ class ObjectRepository:
         self.db = db
 
     def get_all(self, skip: int = 0, limit: int = 100) -> List[Object]:
-        return self.db.query(Object).offset(skip).limit(limit).all()
+        return self.db.query(Object).options(
+            joinedload(Object.images).joinedload(Image.source)
+        ).offset(skip).limit(limit).all()
 
     def get_by_id(self, object_id: int) -> Optional[Object]:
         """Fetch a single object by primary key. Returns None if not found."""
-        return self.db.query(Object).filter(Object.id == object_id).first()
+        return self.db.query(Object).options(
+            joinedload(Object.images).joinedload(Image.source)
+        ).filter(Object.id == object_id).first()
 
-    def search(self, material: Optional[str] = None, year: Optional[int] = None, date_start: Optional[int] = None, date_end: Optional[int] = None) -> List[Object]:
-        query = self.db.query(Object)
+    def search(self, material: Optional[str] = None, year: Optional[int] = None, date_start: Optional[int] = None, date_end: Optional[int] = None, skip: int = 0, limit: int = 100) -> List[Object]:
+        query = self.db.query(Object).options(
+            joinedload(Object.images).joinedload(Image.source)
+        )
 
         if material:
             query = query.filter(Object.material.ilike(f"%{material}%"))
@@ -29,7 +35,7 @@ class ObjectRepository:
         if date_end is not None:
             query = query.filter(Object.date_start <= date_end)
 
-        results = query.all()
+        results = query.offset(skip).limit(limit).all()
         return results
 
 
