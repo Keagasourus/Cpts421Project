@@ -59,18 +59,16 @@ jobs:
 
   deploy:
     needs: [backend-test, frontend-test]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-    - name: Deploy to WSU Production Server
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host: ${{ secrets.PROD_HOST }}
-        username: ${{ secrets.PROD_USERNAME }}
-        key: ${{ secrets.PROD_SSH_KEY }}
-        script: |
-          cd /opt/artifact
-          git fetch origin main
-          git reset --hard origin/main
-          cd deployment
-          docker compose down
-          docker compose up -d --force-recreate --remove-orphans
+    - name: Pull latest code
+      run: |
+        cd /opt/artifact
+        git fetch origin main
+        git reset --hard origin/main
+
+    - name: Deploy with Docker Compose
+      run: |
+        cd /opt/artifact/deployment
+        docker compose down
+        docker compose up -d --force-recreate --remove-orphans
