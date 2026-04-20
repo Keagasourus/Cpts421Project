@@ -22,10 +22,9 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Setup DB on startup
-    engine = get_engine()
-    Base.metadata.create_all(bind=engine)
-    app_logger.info("Application starting up, database schemas verified.")
+    app_logger.info("Application starting up...")
+    # Production Notice: Table schema should be driven by Alembic via `alembic upgrade head`.
+    # Do NOT inject Base.metadata.create_all(bind=engine) here.
     yield
     app_logger.info("Application shutting down.")
 
