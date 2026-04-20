@@ -1,10 +1,23 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import useObject from '../hooks/useObject';
+import { useAuth } from '../contexts/AuthContext';
+import api from '../services/api';
 
 const ObjectPage = () => {
     const { id } = useParams();
     const navigate = useNavigate();
     const { object, loading, error } = useObject(id);
+    const { isAdmin } = useAuth();
+
+    const handleDelete = async () => {
+        if (!confirm('Are you sure you want to delete this artifact?')) return;
+        try {
+            await api.delete(`/objects/${id}`);
+            navigate('/search');
+        } catch (err) {
+            alert('Failed to delete object: ' + (err.response?.data?.detail || err.message));
+        }
+    };
 
     if (loading) return <div className="p-8 text-center text-gray-500">Loading object details...</div>;
     if (error) return <div className="p-8 text-center text-red-500">Error loading object.</div>;
@@ -15,12 +28,20 @@ const ObjectPage = () => {
             <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 <div className="p-6 border-b border-gray-200 flex justify-between items-center">
                     <h1 className="text-2xl font-bold text-gray-900">{object.object_type}</h1>
-                    <button
-                        onClick={() => navigate(-1)}
-                        className="text-sm text-gray-600 hover:text-blue-600"
-                    >
-                        Back
-                    </button>
+                    <div className="space-x-4">
+                        {isAdmin && (
+                            <>
+                                <button onClick={() => navigate(`/objects/${id}/edit`)} className="px-3 py-1 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700">Edit</button>
+                                <button onClick={handleDelete} className="px-3 py-1 text-sm font-medium text-white bg-red-600 rounded hover:bg-red-700">Delete</button>
+                            </>
+                        )}
+                        <button
+                            onClick={() => navigate(-1)}
+                            className="text-sm font-medium text-gray-600 hover:text-gray-900"
+                        >
+                            Back
+                        </button>
+                    </div>
                 </div>
 
                 <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">

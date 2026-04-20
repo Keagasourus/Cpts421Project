@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, Numeric, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, Date, Numeric, ForeignKey, Table, Boolean
 from sqlalchemy.orm import relationship
 from .database import Base
 
@@ -9,6 +9,14 @@ image_tags = Table(
     Column("image_id", Integer, ForeignKey("images.id", ondelete="CASCADE"), primary_key=True),
     Column("tag_id", Integer, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
 )
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    is_admin = Column(Boolean, default=False)
 
 class Source(Base):
     __tablename__ = "sources"
@@ -57,4 +65,5 @@ class Object(Base):
     unit = Column(String(20), default='cm')
 
     # Relationships
-    images = relationship("Image", backref="object")
+    images = relationship("Image", backref="object", cascade="all, delete-orphan")
+

@@ -1,15 +1,15 @@
-"""
-FastAPI application for the Academic Artifact Research Database API.
-Routes are thin controllers that delegate to the ObjectService.
-"""
 import time
-from fastapi import FastAPI, HTTPException, Query, Depends, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Depends, Request, Response, UploadFile, File, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from datetime import timedelta
 
 from .database import get_db, engine, Base
-from .schemas import ObjectDetailResponse, ObjectMapResponse
+from .schemas import ObjectDetailResponse, ObjectMapResponse, UserLogin, ObjectCreate, ObjectUpdate
 from .services.object_service import ObjectService
+from .services.s3_service import upload_file_to_minio
+from .auth import verify_password, create_access_token, get_current_user, get_current_admin_user, ACCESS_TOKEN_EXPIRE_MINUTES
+from .models import User
 
 from contextlib import asynccontextmanager
 
@@ -37,12 +37,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_methods=["*"],  # Fixed to allow all methods
+    allow_headers=["*"],
 )
 
 
 # SEC-13: Simple in-memory rate limiter middleware
+# (Rate limit skipped logic here for brevity, keeping existing)
 RATE_LIMIT_WINDOW = 60  # seconds
 RATE_LIMIT_MAX = 120    # max requests per window per IP
 _rate_limit_store: dict = {}
@@ -77,6 +78,71 @@ async def rate_limit_middleware(request: Request, call_next):
 def read_root():
     return {"message": "Academic Artifact Research Database API"}
 
+# Custom Auth Endpoints Using HttpOnly Cookies
+
+@app.post("/auth/login")
+def login(login_data: UserLogin, response: Response, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == login_data.username).first()
+    if not user or not verify_password(login_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {access_token}",
+        httponly=True,
+        max_age=1800,
+        expires=1800,
+        samesite="lax",
+        secure=False, # Set True in production with HTTPS
+    )
+    return {"message": "Logged in successfully", "is_admin": user.is_admin}
+
+@app.post("/auth/logout")
+def logout(response: Response):
+    response.delete_cookie("access_token")
+    return {"message": "Logged out successfully"}
+
+@app.get("/auth/me")
+def get_me(current_user: User = Depends(get_current_user)):
+    return {"username": current_user.username, "is_admin": current_user.is_admin}
+
+# Admin Object Management 
+
+@app.post("/upload-images")
+def upload_images(files: List[UploadFile] = File(...), current_user: User = Depends(get_current_admin_user)):
+    urls = []
+    for f in files:
+        urls.append(upload_file_to_minio(f))
+    return {"urls": urls}
+
+@app.post("/objects", response_model=ObjectDetailResponse)
+def create_object(object_data: ObjectCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
+    service = ObjectService(db)
+    return service.create_object(object_data.model_dump())
+
+@app.put("/objects/{object_id}", response_model=ObjectDetailResponse)
+def update_object(object_id: int, object_data: ObjectUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
+    service = ObjectService(db)
+    result = service.update_object(object_id, object_data.model_dump())
+    if not result:
+        raise HTTPException(status_code=404, detail="Object not found")
+    return result
+
+@app.delete("/objects/{object_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_object(object_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
+    service = ObjectService(db)
+    success = service.delete_object(object_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Object not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# Existing Endpoints
 
 @app.get("/objects/search", response_model=List[ObjectDetailResponse])
 def search_objects(

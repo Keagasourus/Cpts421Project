@@ -71,3 +71,13 @@ CREATE TABLE image_tags (
 );
 
 CREATE INDEX idx_image_tags_tag_id ON image_tags(tag_id);
+
+-- 1.6 USERS
+-- Admins using the system
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    username VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    is_admin BOOLEAN DEFAULT FALSE
+);

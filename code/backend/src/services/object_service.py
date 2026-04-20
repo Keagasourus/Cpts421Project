@@ -65,3 +65,21 @@ class ObjectService:
     def get_all_tags(self) -> List[str]:
         """All unique tag names."""
         return self.repo.get_all_tags()
+
+    def create_object(self, object_data: dict) -> dict:
+        """Create a new artifact manually."""
+        images_data = object_data.pop("images", [])
+        obj = self.repo.add_object(object_data, images_data)
+        return _enrich_object_dict(obj)
+
+    def update_object(self, object_id: int, object_data: dict) -> Optional[dict]:
+        """Edit an artifact."""
+        images_data = object_data.pop("images", [])
+        obj = self.repo.update_object(object_id, object_data, images_data)
+        if obj:
+            return _enrich_object_dict(obj)
+        return None
+
+    def delete_object(self, object_id: int) -> bool:
+        """Delete an artifact."""
+        return self.repo.delete_object(object_id)

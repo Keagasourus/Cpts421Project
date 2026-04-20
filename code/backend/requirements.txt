@@ -11,3 +11,5 @@ beautifulsoup4
 boto3
 selenium
 undetected-chromedriver
+PyJWT
+passlib[bcrypt]
