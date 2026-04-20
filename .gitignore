@@ -42,7 +42,6 @@ venv.bak/
 node_modules/
 npm-debug.log
 yarn-error.log
-package-lock.json
 # Keep package-lock.json if you want reproducible builds, but some prefer to ignore it. 
 # Standard practice is to commit it, but given this is a template/early stage, ensuring no conflicts. 
 # Actually, standard practice IS to commit package-lock.json. I will NOT ignore it, so removing it from this list is better? 
