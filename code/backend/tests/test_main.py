@@ -53,7 +53,8 @@ def setup_database():
         date_display="c. 300 AD",
         date_start=250,
         date_end=350,
-        inventory_number="INV001"
+        inventory_number="INV001",
+        review_status="accepted"
     )
     db.add(obj1)
     db.commit()
